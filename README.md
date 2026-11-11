@@ -1,74 +1,114 @@
-# Auto ABS Starter — 用 AbsBox 搭的汽车贷款证券化现金流模型
+# Auto ABS Cash Flow Modeling & Credit Stress Testing
 
-一个**已经实际跑通**的 starter 项目：用开源库 [AbsBox](https://github.com/yellowbean/AbsBox)
-（后端引擎 Hastructure）建模一笔简化的 Auto ABS，做情景分析和 CDR×CPR 敏感性分析。
+A simplified, fully reproducible auto-loan securitization model built with
+[AbsBox](https://github.com/yellowbean/AbsBox) (Python) on the Hastructure
+cash-flow engine. It models a $100mm auto-loan pool, a three-tranche
+senior-subordinate structure with a sequential-pay waterfall, and evaluates
+tranche performance under base / optimistic / stress collateral scenarios
+and a CDR × CPR sensitivity grid.
 
-> 数据全部为合成的代表性资产池（rep lines），不是真实交易。
-> 真实交易参考：AbsBox 文档里的 BMW Auto Deal 2023-01（revolving 结构，复杂度高得多），
-> 本项目是它的简化学习版：静态池 + 顺序支付（sequential pay）。
+> **Scope & honesty note.** All collateral is *synthetic* (three representative
+> loan segments, not loan-level real data) and the structure is a simplified
+> amortizing deal. Results below are outputs of this model only — they are
+> **not** the results of any real transaction and not a rating-agency model.
+> A real-world benchmark modelled in the AbsBox documentation is the
+> BMW Auto Deal 2023-01 (a revolving structure with materially more features).
 
-## 交易结构
+中文说明见 [README_CN.md](README_CN.md).
 
-| 部分 | 设定 |
+## Transaction structure
+
+| Component | Terms |
 |---|---|
-| 资产池 | $100mm 汽车贷款，用 3 条 `Installment` 代表线：prime $50mm / near-prime $30mm / subprime $20mm |
-| Class A（senior） | $85mm，固定 5.00%，sequential |
-| Class B（mezz） | $10mm，固定 7.50%，sequential |
-| Class E（equity） | $5mm，无票息，拿剩余现金流 → A 的次级保护 = 15% |
-| 费用 | servicer fee 1.00%/年（按池余额），trustee 固定费 $25,000 |
-| Waterfall | 费用 → A 利息 → B 利息 → A 本金 → B 本金 → E 本金 → 剩余给 E |
+| Collateral pool | $100mm auto loans, 3 `Installment` rep lines: prime $50mm / near-prime $30mm / subprime $20mm |
+| Class A (senior) | $85mm, 5.00% fixed, sequential |
+| Class B (mezzanine) | $10mm, 7.50% fixed, sequential |
+| Class E (equity) | $5mm, no coupon, receives residual cash flow |
+| Subordination | 15% beneath Class A (B + E) |
+| Fees | Servicing 1.00% p.a. on pool balance; trustee fixed fee $25,000 |
+| Waterfall (monthly) | Fees → A interest → B interest → A principal → B principal → E principal → residual to E |
 
-**关键口径（踩过的坑）**：`Installment` 资产的 `feeRate` 是**按月、按原始余额的固定费率**
-（fee/月 = originBalance × feeRate，引擎实测验证），不是 APR。
-本项目 prime 0.30%/月 ⇒ 全期总财务费用 = 0.30% × 60 期 = 原始余额的 18%。
+Collateral performance assumptions are expressed as **CDR** (annual default
+rate), **CPR** (annual prepayment rate), recovery rate and recovery lag,
+applied by the engine at loan level.
 
-## 实测结果（2026-11-10 本地引擎真实运行，见 `outputs/`）
+![Tranche amortization](figures/fig2_tranche_amortization.svg)
 
-| 情景 | 假设 (CDR/CPR/回收率/滞后) | 结果 |
-|---|---|---|
-| Base | 1.5% / 8% / 35% / 4月 | 三档全额偿还；A WAL 1.66y，B 3.77y，E 拿回 $5mm + 剩余 $2.16mm |
-| Optimistic | 0.8% / 12% / 45% / 3月 | 三档全额偿还；A WAL 缩短到 1.56y |
-| Stress | 4.0% / 5% / 25% / 6月 | 池累计损失 $6.19mm；**E 本金损失 $2.03mm（40.6%）、剩余为 0；A、B 仍全额偿还** — 次级保护按设计生效 |
+*Sequential pay in the base scenario: Class A amortizes first while B and E
+stay constant; B amortizes only after A is repaid, then E.*
 
-敏感性网格（`outputs/sensitivity_grid.csv`，CDR 0.5%–5% × CPR 3%–15%）：
-- A 在所有格子里零损失；B 只在极端角（CDR 5% + CPR 15%）出现 $1.54mm 损失；
-- 一个值得讲的现象：**CPR 越高，E 损失反而越大** — 提前还款抽走的是还在付费的优质贷款，
-  excess spread 变薄，吸收损失的垫子就变薄。这是面试里能展开讲的点。
+## Results (actual engine run, 2026-11-10)
 
-## 怎么跑
+| Scenario | CDR / CPR / Recovery / Lag | Pool cum. net loss | A WAL | B WAL | E principal loss | E yield* |
+|---|---|---|---|---|---|---|
+| Base | 1.5% / 8% / 35% / 4m | $1.97mm | 1.66y | 3.77y | $0 | +8.61% |
+| Optimistic | 0.8% / 12% / 45% / 3m | $0.82mm | 1.56y | 3.69y | $0 | +6.84% |
+| Stress | 4.0% / 5% / 25% / 6m | $6.19mm | 1.78y | 4.06y | **$2.03mm (40.6%)** | −10.91% |
 
-版本必须对齐（AbsBox 官方规则：absbox 与引擎的 minor 版本要一致）：
+\* Yield = IRR of buying the tranche at par at closing and holding to
+maturity (effective annual). Class A yields ≈ 5.20% and Class B ≈ 7.83% in
+**all** scenarios — both are repaid in full even under stress. Full table:
+`outputs/yield_summary.csv`; cash flows: `outputs/bond_*_flow_*.csv`.
+
+**Key findings**
+
+1. **Subordination works as designed.** Under stress the pool loses $6.19mm,
+   excess spread absorbs roughly $4.2mm, and the remaining $2.03mm loss stops
+   at the equity tranche. Classes A and B are untouched.
+2. **Higher prepayment can *hurt* the equity tranche.** In the CDR × CPR grid
+   (`outputs/sensitivity_grid.csv`), raising CPR increases equity losses:
+   prepaid loans stop paying fees, excess spread thins, and less cushion is
+   left to absorb defaults. Class B only takes a loss in the extreme corner
+   (CDR 5% × CPR 15%, $1.54mm).
+
+![Pool balance by scenario](figures/fig1_pool_balance.svg)
+
+![Stress comparison](figures/fig3_stress_comparison.svg)
+
+## How to run
+
+Version alignment matters (AbsBox rule: the Python package and the engine
+must share the same minor version). Verified combination:
+**absbox 0.50.3 + Hastructure 0.50.2**, run locally — the public engine at
+absbox.org returned 502 Bad Gateway on 2026-11-10.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # absbox==0.50.3
+pip install -r requirements.txt
 
-# 终端 1：启动本地引擎（首次会自动下载 Hastructure 0.50.2 二进制 + config.yml）
+# terminal 1 — local engine (script downloads the binary on first run)
 bash engine/start_engine.sh            # http://localhost:8081
 
-# 终端 2：
-python src/run_scenarios.py            # 三情景 -> outputs/scenario_summary.csv, summary.md
-python src/sensitivity.py              # CDR x CPR 网格 -> outputs/sensitivity_grid.csv
+# terminal 2
+python src/run_scenarios.py            # scenarios -> outputs/
+python src/sensitivity.py              # CDR x CPR grid
+python src/pricing.py                  # tranche yields at par
+python src/make_figures.py             # figures (SVG + PNG)
 ```
 
-为什么用本地引擎：2026-11-10 实测公共引擎 `https://absbox.org/api/latest` 返回 **502 Bad Gateway**；
-本地二进制（absbox 0.50.3 + Hastructure 0.50.2）连接和运行都已验证通过。
-
-## 文件结构
+## Repository layout
 
 ```
-src/auto_abs_deal.py   # 交易定义（池/债券/费用/waterfall/情景假设）
-src/run_scenarios.py   # 三情景运行 + WAL/损失汇总
-src/sensitivity.py     # CDR x CPR 敏感性网格
-engine/start_engine.sh # 本地引擎一键启动
-outputs/               # 引擎实际输出的现金流 CSV + 汇总
+src/auto_abs_deal.py   deal definition: pool, tranches, fees, waterfall, scenarios
+src/run_scenarios.py   base / optimistic / stress runs; WAL & loss summary
+src/sensitivity.py     CDR x CPR sensitivity grid
+src/pricing.py         tranche yield (IRR at par) from engine cash flows
+src/make_figures.py    figures from the engine outputs
+engine/start_engine.sh local Hastructure engine launcher
+outputs/               engine cash flows (CSV), scenario & yield summaries
+figures/               charts generated from outputs/
 ```
 
-## 下一步可以加什么（按价值排序）
+## Limitations & next steps
 
-1. **分段假设**：现在三条代表线共用一组 CDR/CPR；改成按 segment 分别设假设
-   （subprime CDR 更高），用 AbsBox 的 by-index / by-tag 假设功能。
-2. **Trigger**：加累计损失 trigger，触发后 turbos（全部本金先还 A），对比有无 trigger 时 B 的损失。
-3. **Reserve account**：加固定目标 $1mm 储备账户，看 stress 下 B 是否还能全额偿还。
-4. **定价**：给每档加 pricing 假设出 IRR/PV，和 WAL 一起做成完整的 tranche 分析表。
-5. **对标真实交易**：把 BMW 2023-01 的 revolving 结构（文档有完整代码）跑通，和本项目逐项对照。
+- Synthetic representative segments share one set of CDR/CPR assumptions;
+  segment-level assumptions (higher CDR for subprime) are the first extension.
+- No cumulative-loss trigger, reserve account, or revolving period yet —
+  each is a documented next step, in that order.
+- The `Installment` asset charges a **flat monthly fee on the original
+  balance** (engine-verified), so segment fee rates were calibrated as
+  monthly flat fees, not APRs. A loan-level amortizing treatment is a
+  possible refinement.
+- Benchmarking against a real transaction (e.g. BMW 2023-01 in the AbsBox
+  docs, or a presale report's capital structure) is planned as a
+  comparison layer, kept strictly separate from this synthetic model.
