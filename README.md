@@ -2,17 +2,25 @@
 
 A simplified, fully reproducible auto-loan securitization model built with
 [AbsBox](https://github.com/yellowbean/AbsBox) (Python) on the Hastructure
-cash-flow engine. It models a $100mm auto-loan pool, a three-tranche
-senior-subordinate structure with a sequential-pay waterfall, and evaluates
-tranche performance under base / optimistic / stress collateral scenarios
-and a CDR × CPR sensitivity grid.
+cash-flow engine. It models a $100mm auto-loan pool as level-payment
+amortizing loans, tranches it into a senior / mezzanine / equity stack with
+a sequential-pay waterfall, and evaluates the structure with segment-level
+stress scenarios, a CDR × CPR sensitivity grid, break-even cumulative net
+loss (CNL) analysis, XIRR pricing at par, and a full cash-flow
+reconciliation.
 
-> **Scope & honesty note.** All collateral is *synthetic* (three representative
-> loan segments, not loan-level real data) and the structure is a simplified
-> amortizing deal. Results below are outputs of this model only — they are
-> **not** the results of any real transaction and not a rating-agency model.
-> A real-world benchmark modelled in the AbsBox documentation is the
-> BMW Auto Deal 2023-01 (a revolving structure with materially more features).
+> **Scope & honesty note.** All collateral is *synthetic* (three
+> representative segments, not loan-level real data) and the structure is a
+> simplified amortizing deal. Results are outputs of this model only —
+> they are **not** the results of any real transaction and not a
+> rating-agency model.
+>
+> **v2 (2026-11-11)** replaced the v1 collateral model (flat-fee
+> `Installment` rep lines with inconsistent seasoning — see git history)
+> with true amortizing loans and aligned dates. v2 results therefore
+> differ from v1 and supersede them; the v1 pool flows did not reconcile
+> in the first period, which is exactly what the v2 reconciliation now
+> verifies period by period.
 
 中文说明见 [README_CN.md](README_CN.md).
 
@@ -20,57 +28,87 @@ and a CDR × CPR sensitivity grid.
 
 | Component | Terms |
 |---|---|
-| Collateral pool | $100mm auto loans, 3 `Installment` rep lines: prime $50mm / near-prime $30mm / subprime $20mm |
+| Collateral | $100mm auto loans, 3 segments, level-payment amortizing (interest on outstanding balance): prime $50mm @ 6.50% APR / 60m; near-prime $30mm @ 10.50% / 60m; subprime $20mm @ 17.00% / 48m (pool WAC ≈ 9.8%) |
 | Class A (senior) | $85mm, 5.00% fixed, sequential |
 | Class B (mezzanine) | $10mm, 7.50% fixed, sequential |
 | Class E (equity) | $5mm, no coupon, receives residual cash flow |
 | Subordination | 15% beneath Class A (B + E) |
-| Fees | Servicing 1.00% p.a. on pool balance; trustee fixed fee $25,000 |
+| Fees | Servicing: fixed $25,000 + 1.00% p.a. on pool balance |
 | Waterfall (monthly) | Fees → A interest → B interest → A principal → B principal → E principal → residual to E |
+| Dates | Origination = cutoff 2025-12-01; closing 2026-01-15; payments monthly on the 25th |
 
-Collateral performance assumptions are expressed as **CDR** (annual default
-rate), **CPR** (annual prepayment rate), recovery rate and recovery lag,
-applied by the engine at loan level.
+Collateral performance assumptions are **segment-specific** (CDR / CPR /
+recovery / lag per segment):
+
+| Segment | Base | Optimistic | Stress |
+|---|---|---|---|
+| Prime | 0.6% / 10% / 45% / 3m | 0.3% / 13% / 55% / 2m | 1.8% / 6% / 32% / 5m |
+| Near-prime | 1.8% / 9% / 38% / 4m | 0.9% / 11% / 48% / 3m | 5.0% / 5% / 27% / 6m |
+| Subprime | 4.5% / 7% / 28% / 5m | 2.2% / 9% / 35% / 4m | 11.0% / 4% / 20% / 8m |
 
 ![Tranche amortization](figures/fig2_tranche_amortization.svg)
 
 *Sequential pay in the base scenario: Class A amortizes first while B and E
 stay constant; B amortizes only after A is repaid, then E.*
 
-## Results (actual engine run, 2026-11-10)
+## Results (actual engine run, v2, 2026-11-11)
 
-| Scenario | CDR / CPR / Recovery / Lag | Pool cum. net loss | A WAL | B WAL | E principal loss | E yield* |
-|---|---|---|---|---|---|---|
-| Base | 1.5% / 8% / 35% / 4m | $1.97mm | 1.66y | 3.77y | $0 | +8.61% |
-| Optimistic | 0.8% / 12% / 45% / 3m | $0.82mm | 1.56y | 3.69y | $0 | +6.84% |
-| Stress | 4.0% / 5% / 25% / 6m | $6.19mm | 1.78y | 4.06y | **$2.03mm (40.6%)** | −10.91% |
+| Scenario | Pool cum. net loss | A WAL / XIRR | B WAL / XIRR | E WAL / XIRR | Tranche principal losses |
+|---|---|---|---|---|---|
+| Base | $2.43mm | 1.64y / 5.12% | 3.73y / 7.76% | 4.16y / 25.08% | none |
+| Optimistic | $1.02mm | 1.55y / 5.12% | 3.58y / 7.76% | 4.00y / 28.67% | none |
+| Stress | $7.49mm | 1.83y / 5.12% | 4.14y / 7.76% | 4.67y / 9.32% | none |
 
-\* Yield = IRR of buying the tranche at par at closing and holding to
-maturity (effective annual). Class A yields ≈ 5.20% and Class B ≈ 7.83% in
-**all** scenarios — both are repaid in full even under stress. Full table:
-`outputs/yield_summary.csv`; cash flows: `outputs/bond_*_flow_*.csv`.
+XIRR = internal rate of return of buying at par at closing, discounted on
+actual cash-flow dates (`src/pricing.py`). For E, cash flows include
+residual distributions, so its XIRR is an equity IRR. Full tables:
+`outputs/scenario_summary.csv`, `outputs/yield_summary.csv`.
 
 **Key findings**
 
-1. **Subordination works as designed.** Under stress the pool loses $6.19mm,
-   excess spread absorbs roughly $4.2mm, and the remaining $2.03mm loss stops
-   at the equity tranche. Classes A and B are untouched.
-2. **Higher prepayment can *hurt* the equity tranche.** In the CDR × CPR grid
-   (`outputs/sensitivity_grid.csv`), raising CPR increases equity losses:
-   prepaid loans stop paying fees, excess spread thins, and less cushion is
-   left to absorb defaults. Class B only takes a loss in the extreme corner
-   (CDR 5% × CPR 15%, $1.54mm).
+1. **Excess spread is the first line of defence — and it is thick.**
+   The pool collects ≈ $21mm of interest over its life against ≈ $9.8mm of
+   bond coupons and ≈ $4mm of fees. **All** losses in all three scenarios
+   ($1.0mm / $2.4mm / $7.5mm) are absorbed by excess spread; no tranche
+   takes a principal loss (verified in `outputs/reconciliation.md`).
+2. **Equity risk shows up as residual compression, not principal loss.**
+   E distributions fall from $10.10mm (optimistic) to $8.67mm (base) to
+   $2.65mm (stress); E XIRR compresses 28.7% → 25.1% → 9.3%.
+3. **Break-even CNL** (CDR multiplier on base, bisection in
+   `src/breakeven.py`): Class E first takes a principal loss at
+   ≈ **3.85× base CDR**, where pool CNL = **$8.64mm (8.64%)**; Class B at
+   ≈ **5.64×**, CNL = **$12.07mm (12.07%)**. (`outputs/breakeven.md`)
+4. **Faster prepayment compresses the equity residual.** In the uniform
+   CDR × CPR grid (`outputs/sensitivity_grid.csv`), at a fixed CDR of
+   0.5%, raising CPR from 3% to 15% cuts E distributions from $12.13mm to
+   $9.81mm — prepaid loans stop generating the interest that funds the
+   residual.
 
 ![Pool balance by scenario](figures/fig1_pool_balance.svg)
 
 ![Stress comparison](figures/fig3_stress_comparison.svg)
+
+## Reconciliation
+
+`src/reconciliation.py` checks every scenario, every period:
+
+- Pool identity: BegBal − Principal − Prepayment − Default = EndBal
+  (max residual ≈ 3e-08; pool opens at exactly $100,000,000)
+- Bond identity per tranche: BegBal − PrincipalPaid = EndBal
+- Loss allocation order (E before B before A)
+- Account conservation; the only non-zero end balance is $1,222.98 of
+  recoveries collected on 2031-05-31, after the final distribution date —
+  flagged and explained in the report, not silently zeroed.
+
+**Status: ALL CHECKS PASS** — see `outputs/reconciliation.md`.
 
 ## How to run
 
 Version alignment matters (AbsBox rule: the Python package and the engine
 must share the same minor version). Verified combination:
 **absbox 0.50.3 + Hastructure 0.50.2**, run locally — the public engine at
-absbox.org returned 502 Bad Gateway on 2026-11-10.
+absbox.org returned 502 Bad Gateway on 2026-11-10. Linux is the verified
+platform; on macOS see the platform note in `engine/start_engine.sh`.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -82,33 +120,37 @@ bash engine/start_engine.sh            # http://localhost:8081
 # terminal 2
 python src/run_scenarios.py            # scenarios -> outputs/
 python src/sensitivity.py              # CDR x CPR grid
-python src/pricing.py                  # tranche yields at par
+python src/breakeven.py                # break-even CNL by tranche
+python src/pricing.py                  # tranche XIRR at par
+python src/reconciliation.py           # cash-flow checks -> outputs/reconciliation.md
 python src/make_figures.py             # figures (SVG + PNG)
 ```
 
 ## Repository layout
 
 ```
-src/auto_abs_deal.py   deal definition: pool, tranches, fees, waterfall, scenarios
+src/auto_abs_deal.py   deal definition: segments, tranches, fees, waterfall
 src/run_scenarios.py   base / optimistic / stress runs; WAL & loss summary
-src/sensitivity.py     CDR x CPR sensitivity grid
-src/pricing.py         tranche yield (IRR at par) from engine cash flows
+src/sensitivity.py     uniform CDR x CPR sensitivity grid
+src/breakeven.py       break-even CNL via CDR-multiplier bisection
+src/pricing.py         tranche XIRR at par on actual dates
+src/reconciliation.py  period-by-period cash-flow verification & loss attribution
 src/make_figures.py    figures from the engine outputs
-engine/start_engine.sh local Hastructure engine launcher
-outputs/               engine cash flows (CSV), scenario & yield summaries
+engine/start_engine.sh local Hastructure engine launcher (Linux; macOS note inside)
+outputs/               engine cash flows (CSV), summaries, reconciliation, breakeven
 figures/               charts generated from outputs/
 ```
 
 ## Limitations & next steps
 
-- Synthetic representative segments share one set of CDR/CPR assumptions;
-  segment-level assumptions (higher CDR for subprime) are the first extension.
-- No cumulative-loss trigger, reserve account, or revolving period yet —
-  each is a documented next step, in that order.
-- The `Installment` asset charges a **flat monthly fee on the original
-  balance** (engine-verified), so segment fee rates were calibrated as
-  monthly flat fees, not APRs. A loan-level amortizing treatment is a
-  possible refinement.
-- Benchmarking against a real transaction (e.g. BMW 2023-01 in the AbsBox
-  docs, or a presale report's capital structure) is planned as a
-  comparison layer, kept strictly separate from this synthetic model.
+- Synthetic representative segments, not loan-level data; assumptions are
+  constant CDR/CPR curves (no front-loaded default timing or macro-linked
+  dynamics yet).
+- Credit enhancement is subordination + excess spread only. Next steps, in
+  order: a reserve account; an explicit OC target with turbo principal on
+  a cumulative-net-loss trigger; then benchmarking against a real
+  transaction's capital structure from its prospectus/presale, kept
+  strictly separate from this synthetic model.
+- Technical note: segment assumptions are applied per sub-pool
+  ("ByPoolId"); the "ByIndex" assumption form is not accepted by engine
+  0.50.2 (verified empirically).

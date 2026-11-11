@@ -6,7 +6,7 @@ Figures from the actual engine outputs (../outputs/*.csv).
 Writes both SVG (for GitHub) and PNG (for reports/slides) to ../figures/:
   fig1_pool_balance.svg/png         pool balance by scenario
   fig2_tranche_amortization.svg/png A/B/E outstanding balance, base scenario
-  fig3_stress_comparison.svg/png    pool cumulative net loss vs equity loss
+  fig3_stress_comparison.svg/png    pool cum. net loss vs equity residual
 """
 
 import os
@@ -51,24 +51,29 @@ def main():
     ax.legend()
     save(fig, "fig2_tranche_amortization")
 
-    # Fig 3: pool cumulative net loss vs equity principal loss, by scenario
+    # Fig 3: pool cumulative net loss vs equity residual distributions.
+    # In v2 no tranche takes a principal loss in any headline scenario —
+    # excess spread absorbs all losses — so the equity story is residual
+    # compression, not principal impairment (see breakeven.md for where
+    # principal losses actually begin).
     summary = pd.read_csv(os.path.join(BASE, "scenario_summary.csv"))
     pool_loss = {}
     for s in SCEN:
         pool = pd.read_csv(os.path.join(BASE, f"pool_flow_{s}.csv"))
         pool_loss[s] = float(pool["CumLoss"].iloc[-1]) / 1e6
-    e_loss = (summary[(summary.tranche == "E")].set_index("scenario")
-              ["principal_loss"] / 1e6)
+    e_resid = (summary[(summary.tranche == "E")].set_index("scenario")
+               ["interest_paid"] / 1e6)
     x = range(len(SCEN))
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.bar([i - 0.2 for i in x], [pool_loss[s] for s in SCEN], width=0.4,
            label="Pool cumulative net loss")
-    ax.bar([i + 0.2 for i in x], [e_loss[s] for s in SCEN], width=0.4,
-           label="Equity (E) principal loss")
+    ax.bar([i + 0.2 for i in x], [e_resid[s] for s in SCEN], width=0.4,
+           label="Equity (E) residual distributions")
     ax.set_xticks(list(x))
     ax.set_xticklabels(SCEN)
     ax.set_ylabel("$mm")
-    ax.set_title("Fig 3. Stress comparison — losses stop at the equity tranche")
+    ax.set_title("Fig 3. Losses are absorbed by excess spread —\n"
+                 "equity risk shows up as residual compression")
     ax.legend()
     save(fig, "fig3_stress_comparison")
 

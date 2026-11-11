@@ -1,51 +1,47 @@
 """
-Sensitivity grid: CDR x CPR -> tranche outcomes.
+Sensitivity grid: uniform CDR x CPR -> tranche outcomes.
 
     python src/sensitivity.py
 
 Output: ../outputs/sensitivity_grid.csv
 Each cell runs the full deal through the Hastructure engine.
-Recovery held at 35%, lag 4 months.
+Uniform pool-level assumptions (recovery 35%, lag 4 months) are used so
+the grid stays comparable across cells and with the v1 grid; the three
+headline scenarios in run_scenarios.py use segment-level assumptions.
 """
 
 import os
-import sys
 import pandas as pd
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auto_abs_deal import auto_abs_deal  # noqa: E402
-from run_scenarios import wal_years  # noqa: E402
-
-from absbox import API, EnginePath  # noqa: E402
+from absbox import API
+from auto_abs_deal import build_deal, uniform_assump
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "outputs")
-os.makedirs(OUT, exist_ok=True)
-
-CDRS = [0.005, 0.015, 0.03, 0.05]
-CPRS = [0.03, 0.08, 0.15]
+PAR = {"A": 85_000_000.0, "B": 10_000_000.0, "E": 5_000_000.0}
 
 
 def main():
-    api = API(EnginePath.LOCAL, check=False, lang="english")
+    api = API("http://localhost:8081", "english")
+    deal = build_deal()
     rows = []
-    for cdr in CDRS:
-        for cpr in CPRS:
-            assump = ("Pool", ("Installment", {"CDR": cdr}, {"CPR": cpr},
-                               {"Rate": 0.35, "Lag": 4}, None), None, None)
-            r = api.run(auto_abs_deal, poolAssump=assump, read=True)
-            row = {"CDR": cdr, "CPR": cpr}
-            for tranche, origin in [("A", 85e6), ("B", 10e6), ("E", 5e6)]:
+    for cdr in [0.005, 0.015, 0.03, 0.05]:
+        for cpr in [0.03, 0.08, 0.15]:
+            r = api.run(deal, poolAssump=uniform_assump(cdr, cpr),
+                        read=True, showWarning=False)
+            pool_loss = sum(float(f["CumLoss"].iloc[-1])
+                            for f in r["pool"]["flow"].values())
+            row = {"cdr": cdr, "cpr": cpr,
+                   "pool_cum_loss": round(pool_loss, 2)}
+            for tranche, par in PAR.items():
                 flow = r["bonds"][tranche]
-                prin = float(flow["principal"].fillna(0).sum())
-                cash = prin + float(flow["interest"].fillna(0).sum())
-                row[f"{tranche}_loss"] = round(origin - prin, 2)
-                row[f"{tranche}_cash"] = round(cash, 2)
-                row[f"{tranche}_WAL"] = round(wal_years(flow), 3)
+                paid = float(flow["principal"].fillna(0).sum())
+                row[f"{tranche}_principal_loss"] = round(par - paid, 2)
+                row[f"{tranche}_interest"] = round(
+                    float(flow["interest"].fillna(0).sum()), 2)
             rows.append(row)
-            print(f"CDR={cdr} CPR={cpr} done")
+            print(row)
     grid = pd.DataFrame(rows)
     grid.to_csv(os.path.join(OUT, "sensitivity_grid.csv"), index=False)
-    print(grid.to_string(index=False))
+    print("\nWrote", os.path.join(OUT, "sensitivity_grid.csv"))
 
 
 if __name__ == "__main__":

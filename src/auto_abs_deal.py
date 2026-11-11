@@ -1,120 +1,128 @@
 """
-Auto ABS starter deal — built with AbsBox (absbox 0.50.3 / Hastructure 0.50.2)
+Auto ABS deal definition — v2 (revised 2026-11-11).
 
-A simplified, amortizing (non-revolving) auto-loan ABS:
+Changes vs v1 (see git history):
+  1. Collateral is now modelled as level-payment amortizing loans
+     (AbsBox `Mortgage` asset with type "Level": interest accrues on the
+     OUTSTANDING balance and the loan amortizes monthly), replacing the
+     v1 `Installment` rep lines whose feeRate was a flat monthly fee on
+     the ORIGINAL balance. AbsBox has no dedicated amortizing auto-loan
+     asset class; Mortgage/Level is the engine's amortizing loan and is
+     the treatment the AbsBox maintainer recommends for auto loans.
+  2. Dates are aligned: every segment is originated ON the cutoff date
+     (2025-12-01), so originTerm == remainTerm and currentBalance ==
+     originBalance, and the pool starts at exactly $100mm at closing.
+     In v1 the segments were "born seasoned" (remainTerm < originTerm,
+     a July origin date against a December cutoff), which made the
+     first pool-flow row drop $4.86mm that the flow columns could not
+     explain. v2 reconciles to the cent (see src/reconciliation.py).
+  3. Performance assumptions are segment-specific: the pool is split
+     into three named sub-pools (prime / nearprime / subprime) and each
+     gets its own CDR/CPR/recovery/lag via a "ByPoolId" assumption.
+     (The "ByIndex" assumption form is not accepted by engine 0.50.2 —
+     verified empirically; ByPoolId is the working route.)
 
-  Pool  : USD 100mm of auto loans, modelled as 3 representative
-          `Installment` lines (prime / near-prime / subprime).
-          In AbsBox, an auto loan is an amortising installment asset:
-          principal + fee are spread evenly over the term, and pool
-          performance is driven by CDR / CPR / recovery assumptions.
-  Bonds : A (senior, sequential)  USD 85mm @ 5.00% fixed
-          B (mezzanine, sequential) USD 10mm @ 7.50% fixed
-          E (equity)               USD  5mm @ 0%
-          => Class A has 15% subordination (B + E) beneath it.
-  Fees  : servicer fee 1.00% p.a. on pool balance, trustee fixed fee.
-  Waterfall (each payment date, in order):
-          fees -> A interest -> B interest -> A principal -> B principal
-          -> E principal -> residual to E.
-
-This is a *starter* structure for learning / interview discussion.
-It is NOT the BMW 2023-01 deal: that real deal is revolving and much
-more complex (see the AbsBox docs, "Real World Transaction").
-All pool data here is synthetic and labelled as such.
+Structure (unchanged from v1):
+    Pool $100mm | A $85mm @5.00% | B $10mm @7.50% | E $5mm equity
+    Fees: servicer fixed $25,000 + pool-balance fee 1.00% p.a.
+    Waterfall: fees -> A int -> B int -> A/B/E principal (sequential)
+               -> residual to E
 """
 
 from absbox import Generic
 
-POOL_SEGMENTS = [
-    # (name, balance, feeRate, originTerm, remainTerm)
-    # NOTE on feeRate: for an AbsBox `Installment` asset the fee is FLAT —
-    # fee per month = originBalance x feeRate (verified against the engine:
-    # balance 1,200 @ feeRate 0.01 -> fee 12.00 every month).
-    # So feeRate is a MONTHLY flat fee on the ORIGINAL balance, not an APR.
-    # Total finance charge over the full term = feeRate x term x balance:
-    #   prime     0.0030 x 60 = 18.0% of original balance
-    #   nearprime 0.0045 x 60 = 27.0%
-    #   subprime  0.0070 x 48 = 33.6%
-    ("prime",     50_000_000, 0.0030, 60, 60),
-    ("nearprime", 30_000_000, 0.0045, 60, 54),
-    ("subprime",  20_000_000, 0.0070, 48, 42),
+CUTOFF = "2025-12-01"
+CLOSING = "2026-01-15"
+
+# name, balance, APR (fixed, on outstanding balance), term (months)
+SEGMENTS = [
+    ("prime",     50_000_000, 0.065, 60),
+    ("nearprime", 30_000_000, 0.105, 60),
+    ("subprime",  20_000_000, 0.170, 48),
 ]
 
-def _installment(balance, fee_rate, origin_term, remain_term, origin_date="2025-07-01"):
-    return ["Installment",
-            {"originBalance": float(balance),
-             "feeRate": ["fix", fee_rate],
-             "originTerm": origin_term,
-             "freq": "Monthly",
-             "type": "f_p",
-             "originDate": origin_date},
-            {"status": "Current",
-             "currentBalance": float(balance),
-             "remainTerm": remain_term}]
-
-assets = [_installment(b, r, ot, rt) for _, b, r, ot, rt in POOL_SEGMENTS]
-
-auto_abs_deal = Generic(
-    "AUTO-ABS-STARTER-2026"
-    # dates
-    , {"cutoff": "2025-12-01", "closing": "2026-01-15", "firstPay": "2026-02-25",
-       "payFreq": ["DayOfMonth", 25], "poolFreq": "MonthEnd", "stated": "2031-06-01"}
-    # pool
-    , {"assets": assets}
-    # accounts
-    , (("distAcc", {"balance": 0}),)
-    # bonds
-    , (("A", {"balance": 85_000_000, "rate": 0.05,
-              "originBalance": 85_000_000, "originRate": 0.05,
-              "startDate": "2026-01-15",
-              "rateType": {"Fixed": 0.05},
-              "bondType": {"Sequential": None}}),
-       ("B", {"balance": 10_000_000, "rate": 0.075,
-              "originBalance": 10_000_000, "originRate": 0.075,
-              "startDate": "2026-01-15",
-              "rateType": {"Fixed": 0.075},
-              "bondType": {"Sequential": None}}),
-       ("E", {"balance": 5_000_000, "rate": 0.0,
-              "originBalance": 5_000_000, "originRate": 0.0,
-              "startDate": "2026-01-15",
-              "rateType": {"Fixed": 0.0},
-              "bondType": {"Equity": None}}))
-    # fees
-    , (("servicerFee", {"type": {"annualPctFee": [("poolBalance",), 0.01]},
-                        "feeStart": "2026-01-15"}),
-       ("trusteeFee", {"type": {"fixFee": 25000}, "feeStart": "2026-01-15"}))
-    # waterfall
-    , {"amortizing": [
-        ["payFee", "distAcc", ["servicerFee", "trusteeFee"]],
-        ["accrueAndPayInt", "distAcc", ["A"]],
-        ["accrueAndPayInt", "distAcc", ["B"]],
-        ["payPrin", "distAcc", ["A"]],
-        ["payPrin", "distAcc", ["B"]],
-        ["payPrin", "distAcc", ["E"]],
-        ["payIntResidual", "distAcc", "E"],
-    ]}
-    # collection rules
-    , [["CollectedInterest", "distAcc"],
-       ["CollectedPrincipal", "distAcc"],
-       ["CollectedPrepayment", "distAcc"],
-       ["CollectedRecoveries", "distAcc"]]
-    , None  # liquidity facility
-    , None  # interest rate swap
-    , None  # currency swap
-    , None  # triggers
-    , ("PreClosing", "Amortizing")
-)
-
-# ---- Pool performance scenarios -------------------------------------------
-# Installment assumption = ("Installment", default, prepay, recovery, extra)
-#   default : {"CDR": annualised constant default rate}
-#   prepay  : {"CPR": annualised constant prepayment rate}
-#   recovery: {"Rate": recovery rate on defaulted balance, "Lag": months}
-SCENARIOS = {
-    "base":       ("Pool", ("Installment", {"CDR": 0.015}, {"CPR": 0.08},
-                            {"Rate": 0.35, "Lag": 4}, None), None, None),
-    "optimistic": ("Pool", ("Installment", {"CDR": 0.008}, {"CPR": 0.12},
-                            {"Rate": 0.45, "Lag": 3}, None), None, None),
-    "stress":     ("Pool", ("Installment", {"CDR": 0.040}, {"CPR": 0.05},
-                            {"Rate": 0.25, "Lag": 6}, None), None, None),
+# Per-segment assumptions per scenario: CDR, CPR (annual), recovery rate,
+# recovery lag (months)
+SEGMENT_ASSUMPS = {
+    "base": {
+        "prime":     (0.006, 0.10, 0.45, 3),
+        "nearprime": (0.018, 0.09, 0.38, 4),
+        "subprime":  (0.045, 0.07, 0.28, 5),
+    },
+    "optimistic": {
+        "prime":     (0.003, 0.13, 0.55, 2),
+        "nearprime": (0.009, 0.11, 0.48, 3),
+        "subprime":  (0.022, 0.09, 0.35, 4),
+    },
+    "stress": {
+        "prime":     (0.018, 0.06, 0.32, 5),
+        "nearprime": (0.050, 0.05, 0.27, 6),
+        "subprime":  (0.110, 0.04, 0.20, 8),
+    },
 }
+
+
+def _asset(balance, apr, term):
+    return ["Mortgage",
+            {"originBalance": balance, "originRate": ["fix", apr],
+             "originTerm": term, "freq": "Monthly", "type": "Level",
+             "originDate": CUTOFF},
+            {"currentBalance": balance, "currentRate": apr,
+             "remainTerm": term, "status": "current"}]
+
+
+def _perf(cdr, cpr, rec, lag):
+    return ("Mortgage", {"CDR": cdr}, {"CPR": cpr},
+            {"Rate": rec, "Lag": lag}, None)
+
+
+def segment_assump(scenario: str):
+    """ByPoolId assumption: one (CDR/CPR/recovery/lag) set per sub-pool."""
+    return ("ByPoolId", {
+        name: ("Pool", _perf(*SEGMENT_ASSUMPS[scenario][name]), None, None)
+        for name, *_rest in SEGMENTS})
+
+
+def uniform_assump(cdr, cpr, rec=0.35, lag=4):
+    """Same assumption for every sub-pool — used by the sensitivity grid
+    so the v2 grid stays comparable to the v1 grid."""
+    return ("ByPoolId", {
+        name: ("Pool", _perf(cdr, cpr, rec, lag), None, None)
+        for name, *_rest in SEGMENTS})
+
+
+def build_deal():
+    return Generic(
+        "AutoABS-Starter-v2",
+        {"cutoff": CUTOFF, "closing": CLOSING, "firstPay": "2026-02-25",
+         "payFreq": ["DayOfMonth", 25], "poolFreq": "MonthEnd",
+         "stated": "2031-06-01"},
+        {name: {"assets": [_asset(bal, apr, term)]}
+         for name, bal, apr, term in SEGMENTS},
+        (("acc01", {"balance": 0}),),
+        (("A", {"balance": 85_000_000, "rate": 0.05,
+                "originBalance": 85_000_000, "originRate": 0.05,
+                "startDate": CLOSING, "rateType": {"Fixed": 0.05},
+                "bondType": {"Sequential": None}}),
+         ("B", {"balance": 10_000_000, "rate": 0.075,
+                "originBalance": 10_000_000, "originRate": 0.075,
+                "startDate": CLOSING, "rateType": {"Fixed": 0.075},
+                "bondType": {"Sequential": None}}),
+         ("E", {"balance": 5_000_000, "rate": 0.0,
+                "originBalance": 5_000_000, "originRate": 0.0,
+                "startDate": CLOSING, "rateType": {"Fixed": 0.0},
+                "bondType": {"Equity": None}})),
+        (("servicerFee", {"type": {"fixFee": 25_000}, "feeStart": CLOSING}),
+         ("poolFee", {"type": {"annualPctFee": [("poolBalance",), 0.01]},
+                      "feeStart": CLOSING})),
+        {"amortizing": [
+            ["payFee", "acc01", ["servicerFee", "poolFee"]],
+            ["accrueAndPayInt", "acc01", ["A"]],
+            ["accrueAndPayInt", "acc01", ["B"]],
+            ["payPrinBySeq", "acc01", ["A", "B", "E"]],
+            ["payIntResidual", "acc01", "E"],
+        ]},
+        [[["prime", "nearprime", "subprime"], "CollectedCash", "acc01"]],
+        None, None, None, None,
+        ("PreClosing", "Amortizing"),
+    )

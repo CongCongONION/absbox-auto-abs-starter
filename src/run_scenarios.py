@@ -1,5 +1,5 @@
 """
-Run the Auto ABS starter deal under base / optimistic / stress scenarios.
+Run the Auto ABS deal (v2) under base / optimistic / stress scenarios.
 
 Usage (local Hastructure engine must be running on http://localhost:8081,
 see ../engine/start_engine.sh):
@@ -7,86 +7,108 @@ see ../engine/start_engine.sh):
     python src/run_scenarios.py
 
 Outputs (in ../outputs/):
-    bond_flows_<scenario>.csv   - per-tranche cashflow from the engine
-    pool_flow_<scenario>.csv    - pool cashflow from the engine
-    scenario_summary.csv        - WAL / principal repaid / loss per tranche
-    summary.md                  - readable summary table
+    pool_flow_<scenario>.csv, bond_<tranche>_flow_<scenario>.csv,
+    account_flow_<scenario>.csv, scenario_summary.csv, summary.md
 """
 
 import os
-import sys
 import pandas as pd
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auto_abs_deal import auto_abs_deal, SCENARIOS  # noqa: E402
-
-from absbox import API, EnginePath  # noqa: E402
+from absbox import API
+from auto_abs_deal import build_deal, segment_assump, SEGMENT_ASSUMPS
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "outputs")
 os.makedirs(OUT, exist_ok=True)
-START = pd.Timestamp("2026-01-15")
+
+PAR = {"A": 85_000_000.0, "B": 10_000_000.0, "E": 5_000_000.0}
 
 
-def wal_years(flow: pd.DataFrame) -> float:
-    """Weighted average life in years, from a bond flow frame."""
-    prin = flow["principal"].fillna(0.0)
-    total = prin.sum()
-    if total <= 0:
+def with_date(flow: pd.DataFrame, col: str = "date") -> pd.DataFrame:
+    """Engine read-results carry the date as the index; make it a column."""
+    out = flow.copy()
+    out.insert(0, col, pd.to_datetime(out.index).strftime("%Y-%m-%d"))
+    return out.reset_index(drop=True)
+
+
+def wal(flow: pd.DataFrame) -> float:
+    """Weighted average life (years) from a bond flow frame (date = index)."""
+    f = flow[flow["principal"] > 0].copy()
+    if f.empty:
         return float("nan")
-    dates = pd.to_datetime(flow.index)
-    t = (dates - START).days / 365.25
-    return float((t * prin).sum() / total)
+    dates = pd.to_datetime(f.index)
+    yrs = ((dates - pd.Timestamp("2026-01-15")).days / 365.25).to_numpy()
+    return float((f["principal"].to_numpy() * yrs).sum()
+                 / f["principal"].sum())
 
 
 def main():
-    api = API(EnginePath.LOCAL, check=False, lang="english")
+    api = API("http://localhost:8081", "english")
+    deal = build_deal()
     rows = []
-    for name, assump in SCENARIOS.items():
-        r = api.run(auto_abs_deal, poolAssump=assump, read=True)
-        pool_flow = r["pool"]["flow"]["PoolConsol"]
-        pool_flow.to_csv(os.path.join(OUT, f"pool_flow_{name}.csv"))
-        for tranche in ["A", "B", "E"]:
+    md = ["# Auto ABS starter — scenario results (v2, engine run 2026-11-11)",
+          "",
+          "Segment-level assumptions (CDR/CPR/recovery/lag by segment); "
+          "collateral = level-payment amortizing loans, pool opens at "
+          "exactly $100,000,000.",
+          "",
+          "| Scenario | Tranche | Principal paid | Principal loss | "
+          "Interest paid | WAL (yrs) |",
+          "|---|---|---:|---:|---:|---:|"]
+    for scen in ["base", "optimistic", "stress"]:
+        r = api.run(deal, poolAssump=segment_assump(scen),
+                    read=True, showWarning=False)
+        # sub-pool flows -> per-segment CSVs + a consolidated pool flow
+        seg_frames = []
+        for seg, frame in r["pool"]["flow"].items():
+            with_date(frame, "Date").to_csv(
+                os.path.join(OUT, f"pool_flow_{scen}_{seg}.csv"), index=False)
+            seg_frames.append(frame)
+        # consolidate on the union of dates: flow columns sum (missing = 0),
+        # Balance sums (a finished segment contributes 0), Cum* sum after
+        # forward-filling each segment's cumulative series.
+        all_dates = sorted(set().union(*[set(f.index) for f in seg_frames]))
+        pool = pd.DataFrame(index=all_dates)
+        for col in ["Balance", "Interest", "Principal", "Prepayment",
+                    "Default", "Recovery", "Loss"]:
+            pool[col] = sum(f[col].reindex(all_dates).fillna(0.0)
+                            for f in seg_frames)
+        for col in ["CumPrincipal", "CumPrepay", "CumDefault", "CumRecovery",
+                    "CumLoss"]:
+            pool[col] = sum(f[col].reindex(all_dates).ffill().fillna(0.0)
+                            for f in seg_frames)
+        pool.index.name = "Date"
+        with_date(pool, "Date").to_csv(
+            os.path.join(OUT, f"pool_flow_{scen}.csv"), index=False)
+        with_date(r["accounts"]["acc01"]).to_csv(
+            os.path.join(OUT, f"account_flow_{scen}.csv"), index=False)
+        cum_loss = float(pool["CumLoss"].iloc[-1])
+        for tranche, par in PAR.items():
             flow = r["bonds"][tranche]
-            flow.to_csv(os.path.join(OUT, f"bond_{tranche}_flow_{name}.csv"))
-            origin = {"A": 85_000_000, "B": 10_000_000, "E": 5_000_000}[tranche]
-            prin_paid = float(flow["principal"].fillna(0).sum())
-            int_paid = float(flow["interest"].fillna(0).sum())
-            rows.append({
-                "scenario": name,
-                "tranche": tranche,
-                "origin_balance": origin,
-                "principal_paid": round(prin_paid, 2),
-                "principal_loss": round(origin - prin_paid, 2),
-                "interest_paid": round(int_paid, 2),
-                "total_cash": round(prin_paid + int_paid, 2),
-                "WAL_years": round(wal_years(flow), 3),
-                "final_balance": float(flow["balance"].iloc[-1]) if len(flow) else None,
-            })
-        cum_loss = float(pool_flow["CumLoss"].iloc[-1]) if "CumLoss" in pool_flow else None
-        print(f"[{name}] pool rows={len(pool_flow)} cum_loss={cum_loss}")
-
+            with_date(flow).to_csv(
+                os.path.join(OUT, f"bond_{tranche}_flow_{scen}.csv"),
+                index=False)
+            paid = float(flow["principal"].fillna(0).sum())
+            loss = par - paid
+            interest = float(flow["interest"].fillna(0).sum())
+            w = wal(flow)
+            rows.append({"scenario": scen, "tranche": tranche, "par": par,
+                         "principal_paid": round(paid, 2),
+                         "principal_loss": round(loss, 2),
+                         "interest_paid": round(interest, 2),
+                         "wal_years": round(w, 3),
+                         "pool_cum_loss": round(cum_loss, 2)})
+            md.append(f"| {scen} | {tranche} | {paid:,.2f} | {loss:,.2f} | "
+                      f"{interest:,.2f} | {w:.3f} |")
+        a = SEGMENT_ASSUMPS[scen]
+        md.append("")
+        md.append(f"_{scen}: pool cum. net loss ${cum_loss:,.2f}; segment "
+                  f"CDR prime {a['prime'][0]:.1%} / near-prime "
+                  f"{a['nearprime'][0]:.1%} / subprime {a['subprime'][0]:.1%}._")
     summary = pd.DataFrame(rows)
     summary.to_csv(os.path.join(OUT, "scenario_summary.csv"), index=False)
-
-    lines = ["# Auto ABS starter — scenario summary (AbsBox / Hastructure, actual run)",
-             "",
-             "Pool: USD 100mm synthetic auto loans (Installment rep lines). "
-             "Tranches: A 85mm @5.00% / B 10mm @7.50% / E 5mm equity, sequential pay.",
-             "",
-             summary.to_markdown(index=False),
-             "",
-             "Scenarios: base CDR 1.5% / CPR 8% / recovery 35% lag 4m; "
-             "optimistic CDR 0.8% / CPR 12% / recovery 45% lag 3m; "
-             "stress CDR 4.0% / CPR 5% / recovery 25% lag 6m.",
-             "",
-             "Note: tranche E is the equity piece — its 'interest_paid' is "
-             "residual cash (excess spread) paid via payIntResidual, not a coupon. "
-             "In the stress scenario E absorbs the first loss: principal loss "
-             "2,031,040 of 5,000,000, while A and B are fully repaid.",
-             ""]
-    with open(os.path.join(OUT, "summary.md"), "w") as f:
-        f.write("\n".join(lines))
+    with open(os.path.join(OUT, "summary.md"), "w") as fh:
+        fh.write("\n".join(md) + "\n")
     print(summary.to_string(index=False))
+    print("\nWrote outputs to", OUT)
 
 
 if __name__ == "__main__":
