@@ -1,0 +1,3 @@
+absbox==0.50.3
+pandas
+tabulate
