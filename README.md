@@ -102,6 +102,16 @@ residual distributions, so its XIRR is an equity IRR. Full tables:
 
 **Status: ALL CHECKS PASS** — see `outputs/reconciliation.md`.
 
+A separate **cutoff-to-closing bridge** (`src/closing_bridge.py`,
+`outputs/closing_bridge.md`) explains the first flow row: between cutoff
+(2025-12-01) and closing (2026-01-15) the pool collects principal,
+prepayments and interest and incurs its first defaults, so the closing
+balance is $97.67mm (base), the collection account holds $2.99mm, and
+sources & uses at closing balance exactly ($100mm of note proceeds =
+$100mm pool purchase price). An independent pytest suite in `tests/`
+re-derives every identity directly from the committed CSVs — no engine
+required — and runs in CI on every push.
+
 ## How to run
 
 Version alignment matters (AbsBox rule: the Python package and the engine
@@ -123,7 +133,9 @@ python src/sensitivity.py              # CDR x CPR grid
 python src/breakeven.py                # break-even CNL by tranche
 python src/pricing.py                  # tranche XIRR at par
 python src/reconciliation.py           # cash-flow checks -> outputs/reconciliation.md
+python src/closing_bridge.py           # cutoff->closing bridge -> outputs/closing_bridge.md
 python src/make_figures.py             # figures (SVG + PNG)
+python -m pytest tests/ -q             # independent output-integrity tests (no engine needed)
 ```
 
 ## Repository layout
@@ -135,7 +147,9 @@ src/sensitivity.py     uniform CDR x CPR sensitivity grid
 src/breakeven.py       break-even CNL via CDR-multiplier bisection
 src/pricing.py         tranche XIRR at par on actual dates
 src/reconciliation.py  period-by-period cash-flow verification & loss attribution
+src/closing_bridge.py  cutoff-to-closing bridge: balance, collections, sources & uses
 src/make_figures.py    figures from the engine outputs
+tests/                 pytest suite re-deriving every identity from outputs/ (CI-run)
 engine/start_engine.sh local Hastructure engine launcher (Linux; macOS note inside)
 outputs/               engine cash flows (CSV), summaries, reconciliation, breakeven
 figures/               charts generated from outputs/
