@@ -110,7 +110,48 @@ balance is $97.67mm (base), the collection account holds $2.99mm, and
 sources & uses at closing balance exactly ($100mm of note proceeds =
 $100mm pool purchase price). An independent pytest suite in `tests/`
 re-derives every identity directly from the committed CSVs — no engine
-required — and runs in CI on every push.
+required. (A GitHub Actions workflow for it is kept in
+`.github/workflows/tests.yml` in the source tree.)
+
+## Deal v3 — dynamic credit enhancement (`src/deal_v3.py`, `src/run_v3.py`)
+
+The v2 structure plus the mechanisms of a real auto ABS, on a
+split-proceeds design (interest proceeds and principal proceeds are
+collected into separate accounts):
+
+- **Reserve account** targeted at 1.00% of the current pool balance
+  (initially $1.0mm, funded by upsizing equity to $6mm), acting as an
+  interest-shortfall backstop and an excess-spread trap.
+- **CNL trigger:** at $4.0mm of cumulative net losses the deal switches
+  to an **Accelerated (turbo) waterfall** — equity releases stop and
+  all interest proceeds pay note principal.
+- In the normal state, notes amortize only from principal proceeds and
+  excess interest is released to equity monthly, so the trigger has
+  real economic content (with an all-cash waterfall it would change
+  nothing — verified empirically).
+
+Under stress the trigger fires on 2027-02-28 and is decisive
+(`outputs_v3/summary_v3.md`): Class B is repaid in full with the
+trigger and loses **$2,489,871** without it; minimum OC is 102.5%
+with the trigger vs 76.1% without. Equity collects $4.48mm before the
+trigger date — the protection is paid for by the residual holder, as
+in real deals.
+
+## Default timing matters (P2, `src/timing_experiment.py`)
+
+Three default-timing shapes calibrated to the *same* lifetime CNL of
+$8.00mm produce Class E XIRRs of **4.31% (front-loaded), 6.33% (flat),
+8.80% (back-loaded)** — lifetime CNL alone is not a sufficient
+statistic for tranche risk (`outputs/timing_experiment.md`).
+
+## Credit committee memo
+
+`reports/credit_committee_memo.md` — a simulated committee memo:
+structure, scenario and break-even analysis, the trigger evidence, a
+verified-facts-only benchmark against WOART 2025-A
+(`references_woart_2025a.md`), model limitations, and per-tranche
+recommendations. Price/yield sensitivity (95/100/105) is in
+`outputs/price_yield.csv`.
 
 ## How to run
 
@@ -131,9 +172,11 @@ bash engine/start_engine.sh            # http://localhost:8081
 python src/run_scenarios.py            # scenarios -> outputs/
 python src/sensitivity.py              # CDR x CPR grid
 python src/breakeven.py                # break-even CNL by tranche
-python src/pricing.py                  # tranche XIRR at par
+python src/pricing.py                  # tranche XIRR at par + price/yield table
 python src/reconciliation.py           # cash-flow checks -> outputs/reconciliation.md
 python src/closing_bridge.py           # cutoff->closing bridge -> outputs/closing_bridge.md
+python src/run_v3.py                   # deal v3 (reserve + trigger + turbo) -> outputs_v3/
+python src/timing_experiment.py        # same-CNL, different default timing -> outputs/
 python src/make_figures.py             # figures (SVG + PNG)
 python -m pytest tests/ -q             # independent output-integrity tests (no engine needed)
 ```
@@ -141,30 +184,38 @@ python -m pytest tests/ -q             # independent output-integrity tests (no 
 ## Repository layout
 
 ```
-src/auto_abs_deal.py   deal definition: segments, tranches, fees, waterfall
+src/auto_abs_deal.py   deal v2 definition: segments, tranches, fees, waterfall
 src/run_scenarios.py   base / optimistic / stress runs; WAL & loss summary
 src/sensitivity.py     uniform CDR x CPR sensitivity grid
-src/breakeven.py       break-even CNL via CDR-multiplier bisection
-src/pricing.py         tranche XIRR at par on actual dates
+src/breakeven.py       break-even CNL via CDR-multiplier bisection (bracketed)
+src/pricing.py         tranche XIRR at par on actual dates + price/yield table
 src/reconciliation.py  period-by-period cash-flow verification & loss attribution
 src/closing_bridge.py  cutoff-to-closing bridge: balance, collections, sources & uses
+src/deal_v3.py         deal v3: reserve account, CNL trigger, turbo waterfall
+src/run_v3.py          v3 runs incl. trigger-disabled control; OC & trigger timing
+src/timing_experiment.py  same-CNL default-timing experiment (front/flat/back)
 src/make_figures.py    figures from the engine outputs
 tests/                 pytest suite re-deriving every identity from outputs/ (CI-run)
 engine/start_engine.sh local Hastructure engine launcher (Linux; macOS note inside)
-outputs/               engine cash flows (CSV), summaries, reconciliation, breakeven
+outputs/               v2 engine cash flows (CSV), summaries, reconciliation, breakeven
+outputs_v3/            v3 engine cash flows and summary
+reports/               credit committee memo
+references_woart_2025a.md  real-deal benchmark facts (verified vs unverified split)
 figures/               charts generated from outputs/
 ```
 
 ## Limitations & next steps
 
-- Synthetic representative segments, not loan-level data; assumptions are
-  constant CDR/CPR curves (no front-loaded default timing or macro-linked
-  dynamics yet).
-- Credit enhancement is subordination + excess spread only. Next steps, in
-  order: a reserve account; an explicit OC target with turbo principal on
-  a cumulative-net-loss trigger; then benchmarking against a real
-  transaction's capital structure from its prospectus/presale, kept
-  strictly separate from this synthetic model.
+- Synthetic representative segments, not loan-level data; headline
+  assumptions are constant CDR/CPR curves per segment (default timing
+  is explored separately in the P2 experiment; no macro-linked
+  dynamics).
+- Engine-observed behaviour worth knowing: on Hastructure 0.50.2 the
+  `cumPoolNetLossRate` trigger datasource never fires (deprecated in
+  absbox 0.50.3) — the v3 trigger uses the `cumPoolNetLoss` balance
+  instead; and once the deal accelerates, the reserve target stops
+  stepping down (in stress it stays at its trigger-date level,
+  $631,111, released at legal final).
 - Technical note: segment assumptions are applied per sub-pool
   ("ByPoolId"); the "ByIndex" assumption form is not accepted by engine
   0.50.2 (verified empirically).

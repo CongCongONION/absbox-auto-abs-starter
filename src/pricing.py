@@ -36,6 +36,7 @@ def xirr(dates: pd.Series, cash: pd.Series, par: float) -> float:
 
 def main():
     rows = []
+    price_rows = []
     for scen in SCENARIOS:
         for tranche, par in PAR.items():
             flow = pd.read_csv(os.path.join(BASE, f"bond_{tranche}_flow_{scen}.csv"))
@@ -45,9 +46,22 @@ def main():
                 "total_cash": round(float(flow["cash"].fillna(0).sum()), 2),
                 "xirr_pct": round(100 * y, 3),
             })
-            print(scen, tranche, f"XIRR = {100 * y:.3f}%")
+            print(scen, tranche, f"XIRR at par = {100 * y:.3f}%")
+            # yield at purchase prices 95 / 100 / 105 (% of par)
+            for price in (95.0, 100.0, 105.0):
+                yp = xirr(flow["date"], flow["cash"], par * price / 100.0)
+                price_rows.append({
+                    "scenario": scen, "tranche": tranche,
+                    "price_pct_of_par": price,
+                    "yield_xirr_pct": round(100 * yp, 3),
+                })
     out = pd.DataFrame(rows)
     out.to_csv(os.path.join(BASE, "yield_summary.csv"), index=False)
+    prices = pd.DataFrame(price_rows)
+    prices.to_csv(os.path.join(BASE, "price_yield.csv"), index=False)
+    print(prices.pivot_table(index=["scenario", "tranche"],
+                             columns="price_pct_of_par",
+                             values="yield_xirr_pct").to_string())
     print(out.to_string(index=False))
 
 

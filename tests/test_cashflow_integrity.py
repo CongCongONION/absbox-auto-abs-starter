@@ -109,5 +109,44 @@ def test_scenario_summary_matches_flows():
 
 
 def test_breakeven_ordering():
+    import re
     text = (OUT / "breakeven.md").read_text()
-    assert "8.64%" in text and "12.07%" in text  # E breaks before B
+    pcts = [float(x) for x in re.findall(r"\((\d+\.\d+)%\)", text)]
+    # brackets: E break-even CNL in [8.63%, 8.64%], B in [12.05%, 12.06%]
+    assert any(8.5 < p < 8.8 for p in pcts)
+    assert any(11.9 < p < 12.2 for p in pcts)
+    assert min(pcts) < max(pcts)  # E breaks before B
+
+
+# ---------------- deal v3 (dynamic credit enhancement) ----------------
+
+OUT3 = ROOT / "outputs_v3"
+
+
+def _bond_principal(folder, tranche, run):
+    flow = pd.read_csv(folder / f"bond_{tranche}_flow_{run}.csv")
+    return flow["principal"].fillna(0).sum()
+
+
+def test_v3_trigger_protects_class_b_in_stress():
+    # trigger armed: B is repaid in full under stress
+    assert abs(_bond_principal(OUT3, "B", "stress") - 10_000_000) < 0.01
+    # control run (trigger disabled): B loses more than $1mm
+    assert _bond_principal(OUT3, "B", "stress_no_trigger") < 9_000_000
+
+
+def test_v3_reserve_releases_fully_in_normal_state():
+    for run in ("base", "stress_no_trigger"):
+        acct = pd.read_csv(OUT3 / f"account_reserveAcc_{run}.csv")
+        assert abs(float(acct["balance"].iloc[-1])) < 0.01
+
+
+@pytest.mark.parametrize("run", ["base", "optimistic", "stress",
+                                 "stress_no_trigger"])
+def test_v3_pool_identity(run):
+    pool = pd.read_csv(OUT3 / f"pool_flow_{run}.csv")
+    beg = pool["Balance"].shift(1)
+    beg.iloc[0] = POOL_PAR
+    resid = (beg - pool["Principal"] - pool["Prepayment"]
+             - pool["Default"] - pool["Balance"]).abs().max()
+    assert resid < TOL

@@ -44,10 +44,12 @@ def run_at(api, deal, mult: float):
     return cum_loss, losses
 
 
-def bisect_first_loss(api, deal, tranche, lo, hi, tol=0.02):
-    """Smallest multiplier in [lo, hi] where `tranche` loses principal."""
+def bisect_first_loss(api, deal, tranche, lo, hi, tol=0.005):
+    """Bracket [lo, hi] (width <= tol) around the smallest multiplier at
+    which `tranche` first loses principal: at lo the tranche is whole,
+    at hi it has a (small) loss. Returns (lo, hi) or None."""
     if run_at(api, deal, lo)[1][tranche] > 0.01:
-        return lo
+        return (lo, lo)
     if run_at(api, deal, hi)[1][tranche] <= 0.01:
         return None
     while hi - lo > tol:
@@ -56,30 +58,35 @@ def bisect_first_loss(api, deal, tranche, lo, hi, tol=0.02):
             hi = mid
         else:
             lo = mid
-    return hi
+    return (lo, hi)
 
 
 def main():
     api = API("http://localhost:8081", "english")
     deal = build_deal()
     lines = ["# Break-even CNL (CDR multiplier on base segment CDRs; "
-             "CPR / recovery / lag at base)", ""]
-    results = {}
+             "CPR / recovery / lag at base)", "",
+             "Bisection tolerance 0.005x on the multiplier. Each tranche "
+             "reports a BRACKET: at the lower bound the tranche is still "
+             "whole, at the upper bound it has its first (small) loss; "
+             "the break-even CNL lies between the two CNL values.", ""]
     m_e = bisect_first_loss(api, deal, "E", 1.0, 12.0)
-    results["E"] = m_e
-    m_b = bisect_first_loss(api, deal, "B", m_e or 1.0, 20.0) if m_e else None
-    results["B"] = m_b
-    for tranche, m in results.items():
-        if m is None:
+    m_b = bisect_first_loss(api, deal, "B", m_e[0] if m_e else 1.0, 20.0)
+    for tranche, bracket in [("E", m_e), ("B", m_b)]:
+        if bracket is None:
             lines.append(f"- Class {tranche}: no principal loss found in "
                          "the searched range.")
             continue
-        cnl, losses = run_at(api, deal, m)
-        lines.append(f"- Class {tranche} first principal loss at CDR "
-                     f"multiplier ≈ {m:.2f}x base "
-                     f"(CNL at that point ${cnl:,.0f}, "
-                     f"{cnl / 100_000_000:.2%} of the pool; tranche loss "
-                     f"${losses[tranche]:,.0f})")
+        lo, hi = bracket
+        cnl_lo, losses_lo = run_at(api, deal, lo)
+        cnl_hi, losses_hi = run_at(api, deal, hi)
+        lines.append(
+            f"- Class {tranche}: break-even CDR multiplier in "
+            f"[{lo:.3f}x, {hi:.3f}x]; break-even CNL in "
+            f"[${cnl_lo:,.0f} ({cnl_lo / 1e8:.2%}), "
+            f"${cnl_hi:,.0f} ({cnl_hi / 1e8:.2%})] of the pool "
+            f"(loss at lower bound ${losses_lo[tranche]:,.0f}; "
+            f"at upper bound ${losses_hi[tranche]:,.0f})")
         print(lines[-1])
     with open(os.path.join(OUT, "breakeven.md"), "w") as fh:
         fh.write("\n".join(lines) + "\n")
