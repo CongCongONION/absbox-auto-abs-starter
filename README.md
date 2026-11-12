@@ -144,6 +144,24 @@ $8.00mm produce Class E XIRRs of **4.31% (front-loaded), 6.33% (flat),
 8.80% (back-loaded)** — lifetime CNL alone is not a sufficient
 statistic for tranche risk (`outputs/timing_experiment.md`).
 
+## External benchmark — actual vs. projected (P0)
+
+`src/backtesting.py` downloads all twelve monthly servicer reports
+(Form 10-D, Exhibit 99.1) for a real deal — **World Omni Auto
+Receivables Trust 2025-D** (SEC EDGAR, CIK 2087069) — extracts the
+reported actuals into `data/woart_2025d_actuals.csv`, and scores
+projections against them at matched months since closing
+(`reports/actual_vs_projected.md`). Headline findings, stated with
+their limits in the report: WOART's realized CNL reached 0.61% at
+month 12 while its pool factor fell to 0.575 (much faster amortization
+than our base case, 0.758); a naive extrapolation of WOART's own
+first-3-months loss pace underestimates month-12 CNL by 0.37 pts
+because auto losses season; our base case lands close to the realized
+CNL at this horizon for offsetting reasons that the report spells out
+rather than celebrates. The deal here is prime and ours is a blend —
+this is a reasonableness benchmark of performance speeds, not a
+re-underwriting.
+
 ## Credit committee memo
 
 `reports/credit_committee_memo.md` — a simulated committee memo:
@@ -177,6 +195,8 @@ python src/reconciliation.py           # cash-flow checks -> outputs/reconciliat
 python src/closing_bridge.py           # cutoff->closing bridge -> outputs/closing_bridge.md
 python src/run_v3.py                   # deal v3 (reserve + trigger + turbo) -> outputs_v3/
 python src/timing_experiment.py        # same-CNL, different default timing -> outputs/
+python src/backtesting.py              # WOART 2025-D actuals vs model -> reports/ (needs internet)
+python src/reserve_release.py          # value of the v3 reserve remainder -> reports/
 python src/make_figures.py             # figures (SVG + PNG)
 python -m pytest tests/ -q             # independent output-integrity tests (no engine needed)
 ```
@@ -194,12 +214,16 @@ src/closing_bridge.py  cutoff-to-closing bridge: balance, collections, sources &
 src/deal_v3.py         deal v3: reserve account, CNL trigger, turbo waterfall
 src/run_v3.py          v3 runs incl. trigger-disabled control; OC & trigger timing
 src/timing_experiment.py  same-CNL default-timing experiment (front/flat/back)
+src/backtesting.py     SEC EDGAR servicer-report extraction & forecast scoring
+src/reserve_release.py value of releasing the v3 reserve remainder at legal final
 src/make_figures.py    figures from the engine outputs
+data/                  WOART 2025-D reported actuals (from SEC 10-D Ex 99.1)
 tests/                 pytest suite re-deriving every identity from outputs/ (CI-run)
 engine/start_engine.sh local Hastructure engine launcher (Linux; macOS note inside)
 outputs/               v2 engine cash flows (CSV), summaries, reconciliation, breakeven
 outputs_v3/            v3 engine cash flows and summary
-reports/               credit committee memo
+reports/               credit committee memo; actual-vs-projected benchmark;
+                       reserve-release analysis
 references_woart_2025a.md  real-deal benchmark facts (verified vs unverified split)
 figures/               charts generated from outputs/
 ```

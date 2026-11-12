@@ -68,6 +68,20 @@ def main():
              "| Class B proceeds | 10,000,000.00 | | |",
              "| Class E proceeds | 5,000,000.00 | | |",
              "| **Total sources** | **100,000,000.00** | **Total uses** | **100,000,000.00** |",
+             "",
+             "**Concept note (read this before adding any two numbers "
+             "in this file):** sources & uses describes the closing-date "
+             "*funding flows* and balances at exactly $100mm. The trust "
+             "*balance sheet* at closing is a different statement: loans "
+             "($97,673,228.91 in base) + collected cash ($2,985,652.34) = "
+             "$100,658,881.25 of assets against $100,000,000 of notes. "
+             "The $658,881.25 difference is pre-closing net earnings — "
+             "interest collected between cutoff and closing, less "
+             "defaults incurred in the same window (their recoveries are "
+             "still pending and are NOT counted) — and it belongs to the "
+             "residual holder. It is neither missing money nor "
+             "double-counted collateral, and it must not be presented "
+             "as part of the pool's principal balance.",
              ""]
     for scen in SCENARIOS:
         b = bridge(scen)

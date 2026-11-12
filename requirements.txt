@@ -3,3 +3,4 @@ pandas
 tabulate
 scipy
 matplotlib
+lxml  # only for src/backtesting.py (SEC EDGAR HTML parsing)

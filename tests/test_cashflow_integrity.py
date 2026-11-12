@@ -141,6 +141,16 @@ def test_v3_reserve_releases_fully_in_normal_state():
         assert abs(float(acct["balance"].iloc[-1])) < 0.01
 
 
+def test_woart_actuals_series_is_sane():
+    act = pd.read_csv(ROOT / "data" / "woart_2025d_actuals.csv")
+    assert len(act) == 12
+    cnl = act["cumulative_net_loss_pct"]
+    assert cnl.is_monotonic_increasing
+    assert abs(cnl.iloc[-1] - 0.61) < 0.005  # SEC-reported, Sep 2026
+    assert act["pool_factor"].is_monotonic_decreasing
+    assert abs(act["pool_factor"].iloc[-1] - 0.5745) < 0.001
+
+
 @pytest.mark.parametrize("run", ["base", "optimistic", "stress",
                                  "stress_no_trigger"])
 def test_v3_pool_identity(run):
